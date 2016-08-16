@@ -1,5 +1,5 @@
 # -*- coding: utf-8; mode: python -*-
-# pylint: disable=C0103, C0330, R0903, W0613
+# pylint: disable=R0903,R0915,C0330,C0103,W0613
 
 u"""
     sphinx.writers.xelatex
@@ -16,16 +16,19 @@ u"""
 #  imports ...
 # ==============================================================================
 
+import re
 import sys
 from contextlib import contextmanager
 
-from six import text_type
+from six import text_type, itervalues
 
 from docutils import nodes, writers
-from docutils.writers.lantex2e import CharMaps, SortableDict, PreambleCmds
+from docutils.writers.latex2e import CharMaps, SortableDict, PreambleCmds
 
 from sphinx import highlighting
+from sphinx import addnodes
 
+from xelatex_ext.writers.polyglossia import Polyglossia
 
 # ==============================================================================
 class cmap(CharMaps):
@@ -41,7 +44,7 @@ class cmap(CharMaps):
 
     @classmethod
     def maskID(cls, ID):
-        return text_type(txt).translate(cls.IDs)
+        return text_type(ID).translate(cls.IDs)
 
 # ==============================================================================
 class collected_footnote(nodes.footnote):
@@ -70,6 +73,7 @@ class tex(object):
         return retVal
 
     @staticmethod
+    @contextmanager
     def begin(environment, outList=None):
         outList = outList or []
         outList.append("\\begin{%s}\n" % environment)
@@ -77,13 +81,13 @@ class tex(object):
         outList.append("\\begin{%s}\n" % environment)
 
     @staticmethod
-    def renewcommand(cls, cmd, defn, nargs=0, optarg=None):
+    def renewcommand(cmd, defn, nargs=0, optarg=None):
         u"""LaTeX's renewcommand.
 
-        .. code-block: python
+        .. code-block:: python
 
-          >>> renewcommand("plusbinomial", "(#2 + #3)^#1", nargs=3, optarg=4)
-          '\\newcommand{\plusbinomial}[3][4]{(#2 + #3)^#1}'
+           >>> renewcommand("plusbinomial", "(#2 + #3)^#1", nargs=3, optarg=4)
+           '\\newcommand{\plusbinomial}[3][4]{(#2 + #3)^#1}'
         """
         if nargs:
             nargs  = "[%d]" % nargs
@@ -107,11 +111,21 @@ class SimpleFILO(list):
 class SectCounter(list):
 # ==============================================================================
 
-    def __init__(self):   self.incrLevel()
-    def incrLevel(self):  self.append(1)
-    def decrLevel(self):  self.pop()
-    def incrNum(self):    self[-1] += 1
-    def decrNum(self):    self[-1] -= 1
+    def __init__(self):
+        super(SectCounter, self).__init__()
+        self.incrLevel()
+
+    def incrLevel(self):
+        self.append(1)
+
+    def decrLevel(self):
+        self.pop()
+
+    def incrNum(self):
+        self[-1] += 1
+
+    def decrNum(self):
+        self[-1] -= 1
 
 # ==============================================================================
 class XeLaTeXWriter(writers.Writer):
@@ -170,8 +184,17 @@ class Translator(object):
     to the ``ctx.body`` or push needed *end-tags* via ``ctx.end_tags``.  The
     *depart* method can use this context, e.g. to extend the *overall-body* with
     the ``ctx.body`` and/or close the tags, the *visitor* opened.
+    """
 
-    and pushed to the context"""
+    optional = ()
+    """
+    Tuple containing node class names (as strings).
+
+    No exception will be raised if writers do not implement visit
+    or departure functions for these node classes.
+
+    Used to ensure transitional compatibility with existing 3rd-party writers.
+    """
 
     def __init__(self, document):
         self.document     = document
@@ -203,7 +226,7 @@ class Translator(object):
         # push context onto the node stack
         ctx  = dict(
             # predefined names in the ctx object
-            end_tags    = SimpleFILO()
+            end_tags      = SimpleFILO()
             , body        = SimpleFILO()
             , sectCounter = self.sectCounter
         )
@@ -353,15 +376,13 @@ class XeLaTeXTranslator(Translator):
         # elements
         # --------
 
-        #self.elements  = self.default_ctx.copy()
-        # TODO ...
-        #self.elements.update(self.document.docCfg)
-
+        self.elements  = self.default_ctx.copy()
+        self.elements.update(self.document.docCfg)
 
         # common flags & stacks
         # ---------------------
 
-        self.out               = []
+        self.out                = []
         self.bodystack          = []
         self.requirements       = SortableDict({
             "__static" : r'\usepackage{ifthen}'
@@ -370,12 +391,14 @@ class XeLaTeXTranslator(Translator):
         self.fallbacks          = SortableDict() # made a list in depart_document()
 
         self.bibitems           = []
+        self.polyglossia        = Polyglossia(self.settings.language_code)
         self.otherlanguages     = dict()
 
+        self.body               = []
         self.table              = None
         self.next_table_colspec = None
 
-        self.curfilestack     = []
+        self.curfilestack       = []
 
         self.compact_list       = 0
         self.first_document     = 1
@@ -395,7 +418,12 @@ class XeLaTeXTranslator(Translator):
         self.handled_abbrs      = set()
 
         self.next_hyperlink_ids = {}
-        self.next_section_ids = set()
+        self.next_section_ids   = set()
+
+        # PDF properties: pdftitle, pdfauthor
+        # TODO: not yet used
+        self.pdfinfo            = []
+        self.pdfauthor          = []
 
         # footnotes
         # ---------
@@ -412,10 +440,10 @@ class XeLaTeXTranslator(Translator):
         self.next_figure_ids  = set()
         self.next_table_ids   = set()
 
-        self.top_sectionlevel = self.sectionnames.index(self.docCfg.toplevel_sectioning)
+        self.top_sectionlevel = self.sectionnames.index(self.document.docCfg.toplevel_sectioning)
         self.sectionlevel     = self.top_sectionlevel
-        if self.docCfg.get('tocdepth'):
-            self.elements['tocdepth'] = (r'\setcounter{tocdepth}{%d}' % self.docCfg.get('tocdepth'))
+        if self.document.docCfg.get('tocdepth'):
+            self.elements['tocdepth'] = (r'\setcounter{tocdepth}{%d}' % self.document.docCfg.get('tocdepth'))
 
         # code highlighter
         # ----------------
@@ -437,7 +465,7 @@ class XeLaTeXTranslator(Translator):
         # directive in the master file
 
         self.hlsettingstack = 2 * [
-            [self.builder.config.highlight_language, sys.maxint]
+            [self.builder.config.highlight_language, sys.maxsize]
             ]
 
     def pushbody(self, newbody):
@@ -479,6 +507,76 @@ class XeLaTeXTranslator(Translator):
             + self.TEMPLATES.FOOTER % self.elements
             )
 
+    def attval(self, text, whitespace=re.compile('[\n\r\t\v\f]')):
+        """Cleanse, encode, and return attribute value text."""
+        return cmap.mask(whitespace.sub(' ', text))
+
+    def collect_footnotes(self, node):
+        def footnotes_under(n):
+            if isinstance(n, nodes.footnote):
+                yield n
+            else:
+                for c in n.children:
+                    if isinstance(c, addnodes.start_of_file):
+                        continue
+                    for k in footnotes_under(c):
+                        yield k
+        fnotes = {}
+        for fn in footnotes_under(node):
+            num = fn.children[0].astext().strip()
+            newnode = collected_footnote(*fn.children, number=num)
+            fnotes[num] = [newnode, False]
+        return fnotes
+
+    # ------------------------------------------------------------
+    # ID's & hyperrefs
+    # ------------------------------------------------------------
+
+    def hypertarget(self, ID, withdoc=True, anchor=True):
+        if withdoc:
+            ID = self.curfilestack[-1] + ':' + ID
+        return (anchor and '\\phantomsection' or '') + \
+            '\\label{%s}' % cmap.maskID(ID)
+
+    def hyperlink(self, ID):
+        return '{\\hyperref[%s]{' % cmap.maskID(ID)
+
+    def hyperpageref(self, ID):
+        return '\\autopageref*{%s}' % cmap.maskID(ID)
+
+    def generate_indices(self):
+        def generate(content, collapsed):
+            for i, (letter, entries) in enumerate(content):
+                if i > 0:
+                    ret.append('\\indexspace\n')
+                ret.append('%s\n' % cmap.mask(letter))
+                for entry in entries:
+                    if not entry[3]:
+                        continue
+                    ret.append('\\item {\\texttt{%s}}' % cmap.mask(entry[0]))
+                    if entry[4]: # add "extra" info
+                        ret.append(' \\emph{(%s)}' % cmap.mask(entry[4]))
+                    ret.append(', \\pageref{%s:%s}\n' % (entry[2], cmap.maskID(entry[3])))
+
+        ret = []
+        # latex_domain_indices can be False/True or a list of index names
+        indices_config = self.document.docCfg.domain_indices
+        if indices_config:
+            for domain in itervalues(self.builder.env.domains):
+                for indexcls in domain.indices:
+                    indexname = '%s-%s' % (domain.name, indexcls.name)
+                    if (isinstance(indices_config, list)
+                        and indexname not in indices_config):
+                        continue
+                    content, collapsed = indexcls(domain).generate(self.builder.docnames)
+                    if not content:
+                        continue
+                    ret.append(tex.renewcommand(indexname, indexcls.localname))
+                    with tex.begin("theindex", ret):
+                        generate(content, collapsed)
+
+        return ''.join(ret)
+
     # ------------------------------------------------------------
     # common visitors
     # ------------------------------------------------------------
@@ -501,7 +599,7 @@ class XeLaTeXTranslator(Translator):
                 ctx.body.push(r'\DUrole{%s}{' % cls)
                 ctx.end_tags.push('}')
 
-    def depart_inline(self, node):
+    def depart_inline(self, node, ctx):
         self.out.extend(ctx.body)
         self.out.extend(ctx.end_tags)
 
@@ -510,13 +608,12 @@ class XeLaTeXTranslator(Translator):
             self.pdfauthor.append(self.attval(node.astext()))
         ctx.body.append('\\textbf{%s}: &\n\t' % name)
         if name == 'address':
-            self.insert_newline = True
             ctx.body.append('{\\raggedright\n')
             ctx.end_tag.push(' } \\\\\n')
         else:
             ctx.end_tag.push(' \\\\\n')
 
-    def depart_docinfo_item(self, node):
+    def depart_docinfo_item(self, node, ctx):
         self.out.extend(ctx.body)
         self.out.extend(ctx.end_tags)
 
@@ -527,6 +624,53 @@ class XeLaTeXTranslator(Translator):
     # ------------------------------------------------------------
     # visitors
     # ------------------------------------------------------------
+
+    def visit_start_of_file(self, node, ctx):
+        # collect new footnotes
+        self.footnotestack.append(self.collect_footnotes(node))
+        # also add a document target
+        self.next_section_ids.add(':doc')
+        self.curfilestack.append(node['docname'])
+        # use default highlight settings for new file
+        self.hlsettingstack.append(self.hlsettingstack[0])
+
+    def depart_start_of_file(self, node, ctx):
+        self.footnotestack.pop()
+        self.curfilestack.pop()
+        self.hlsettingstack.pop()
+
+    def visit_document(self, node, ctx):
+        self.footnotestack.append(self.collect_footnotes(node))
+        self.curfilestack.append(node.get('docname', ''))
+
+        if self.first_document == 1:
+            # the first document is all the regular content ...
+            ctx.body.push(self.TEMPLATES.BEGIN_DOC % self.elements)
+            self.first_document = 0
+
+        elif self.first_document == 0:
+            # ... and all others are the appendices
+            ctx.body.push(u'\n\\appendix\n')
+            self.first_document = -1
+
+        if 'docname' in node:
+            ctx.body.push(self.hypertarget(':doc'))
+
+        # "- 1" because the level is increased before the title is visited
+        self.sectionlevel = self.top_sectionlevel - 1
+
+    def depart_document(self, node, ctx):
+        if self.bibitems:
+            widest = tex.widest_label([bi[0] for bi in self.bibitems])
+            ctx.body.push(u'\n\\begin{thebibliography}{%s}\n' % widest)
+            for bi in self.bibitems:
+                target = self.hypertarget(bi[2] + ':' + bi[3], withdoc=False)
+                ctx.body.push(
+                    u'\\bibitem[%s]{%s}{%s %s}\n'
+                    % (cmap.mask(bi[0]), cmap.maskID(bi[0]), target, bi[1]))
+            ctx.body.push(u'\\end{thebibliography}\n')
+            self.bibitems = []
+        self.default_depart(node, ctx)
 
     def visit_section(self, node, ctx):
         # increment parent's (current) section counter and add a new level
@@ -585,12 +729,8 @@ class XeLaTeXTranslator(Translator):
 
     depart_bullet_list = default_depart
     def visit_bullet_list(self, node, ctx):
-        if self.is_toc_list:
-            ctx.body.push('%\n\\begin{list}{}{}\n')
-            ctx.end_tag.push('\n\\end{list}\n')
-        else:
-            ctx.body.push('%\n\\begin{itemize}\n')
-            ctx.end_tag.push('\n\\end{itemize}\n')
+        ctx.body.push('%\n\\begin{itemize}\n')
+        ctx.end_tag.push('\n\\end{itemize}\n')
 
     depart_superscript = default_depart
     def visit_superscript(self, node, ctx):
@@ -607,7 +747,7 @@ class XeLaTeXTranslator(Translator):
             self.visit_inline(node, ctx)
 
     depart_caption = default_depart
-    def visit_caption(self, node):
+    def visit_caption(self, node, ctx):
         ctx.body.push('\n\\caption{')
         ctx.end_tag.push('}\n')
 
@@ -618,155 +758,43 @@ class XeLaTeXTranslator(Translator):
         ctx.end_tags.push( '}' )
         if node['classes']:
             self.visit_inline(node, ctx)
-TODO:
-    def visit_citation(self, node, ctx):
-        # TODO maybe use cite bibitems
-        # bibitem: [citelabel, citetext, docname, citeid]
-        self.bibitems.append(['', '', '', ''])
 
-    def depart_citation(self, node, ctx):
-        size = self.context.pop()
-        text = ''.join(self.body[size:])
-        del self.body[size:]
-        self.bibitems[-1][1] = text
+    depart_problematic = default_depart
+    def visit_problematic(self, node, ctx):
+        ctx.body.push(r'{\color{red}\bfseries{}')
+        ctx.end_tags.push( '}' )
 
-    def visit_citation_reference(self, node):
-        # This is currently never encountered, since citation_reference nodes
-        # are already replaced by pending_xref nodes in the environment.
-        self.body.append('\\cite{%s}' % self.idescape(node.astext()))
-
-xxxxxxxxxxxxx
-    # ------------------------------------------------------------
-    # ID's & hyperrefs
-    # ------------------------------------------------------------
-
-    def hypertarget(self, ID, withdoc=True, anchor=True):
-        if withdoc:
-            ID = self.curfilestack[-1] + ':' + ID
-        return (anchor and '\\phantomsection' or '') + \
-            '\\label{%s}' % cmap.maskID(ID)
-
-    def hyperlink(self, ID):
-        return '{\\hyperref[%s]{' % cmap.maskID(ID)
-
-    def hyperpageref(self, ID):
-        return '\\autopageref*{%s}' % cmap.maskID(ID)
-
-    def generate_indices(self):
-        def generate(content, collapsed):
-            for i, (letter, entries) in enumerate(content):
-                if i > 0:
-                    ret.append('\\indexspace\n')
-                ret.append('%s\n' % cmap.mask(letter))
-                for entry in entries:
-                    if not entry[3]:
-                        continue
-                    ret.append('\\item {\\texttt{%s}}' % cmap.mask(entry[0]))
-                    if entry[4]: # add "extra" info
-                        ret.append(' \\emph{(%s)}' % cmap.mask(entry[4]))
-                    ret.append(', \\pageref{%s:%s}\n' % (entry[2], cmap.maskID(entry[3])))
-
-        ret = []
-        # latex_domain_indices can be False/True or a list of index names
-        indices_config = self.docCfg.domain_indices
-        if indices_config:
-            for domain in itervalues(self.builder.env.domains):
-                for indexcls in domain.indices:
-                    indexname = '%s-%s' % (domain.name, indexcls.name)
-                    if (isinstance(indices_config, list)
-                        and indexname not in indices_config):
-                        continue
-                    content, collapsed = indexcls(domain).generate(self.builder.docnames)
-                    if not content:
-                        continue
-                    ret.append(tex.renewcommand(indexname, indexcls.localname))
-                    with latex.begin("theindex", ret):
-                        generate(content, collapsed)
-
-        return ''.join(ret)
-
-    def visit_document(self, node):
-        self.footnotestack.append(self.collect_footnotes(node))
-        self.curfilestack.append(node.get('docname', ''))
-
-        if self.first_document == 1:
-            # the first document is all the regular content ...
-            self.body.append(self.TEMPLATES.BEGIN_DOC % self.elements)
-            self.first_document = 0
-
-        elif self.first_document == 0:
-            # ... and all others are the appendices
-            self.body.append(u'\n\\appendix\n')
-            self.first_document = -1
-
-        if 'docname' in node:
-            self.body.append(self.hypertarget(':doc'))
-
-        # "- 1" because the level is increased before the title is visited
-        self.sectionlevel = self.top_sectionlevel - 1
-
-
-    def depart_document(self, node):
-
-        if self.bibitems:
-            widest = latex.widest_label([bi[0] for bi in self.bibitems])
-            self.body.append(u'\n\\begin{thebibliography}{%s}\n' % widest)
-            for bi in self.bibitems:
-                target = self.hypertarget(bi[2] + ':' + bi[3], withdoc=False)
-                self.body.append(
-                    u'\\bibitem[%s]{%s}{%s %s}\n'
-                    % (cmap.mask(bi[0]), cmap.maskID(bi[0]), target, bi[1]))
-            self.body.append(u'\\end{thebibliography}\n')
-            self.bibitems = []
-
-    def visit_start_of_file(self, node):
-        # collect new footnotes
-        self.footnotestack.append(self.collect_footnotes(node))
-        # also add a document target
-        self.next_section_ids.add(':doc')
-        self.curfilestack.append(node['docname'])
-        # use default highlight settings for new file
-        self.hlsettingstack.append(self.hlsettingstack[0])
-
-    def collect_footnotes(self, node):
-        def footnotes_under(n):
-            if isinstance(n, nodes.footnote):
-                yield n
-            else:
-                for c in n.children:
-                    if isinstance(c, addnodes.start_of_file):
-                        continue
-                    for k in footnotes_under(c):
-                        yield k
-        fnotes = {}
-        for fn in footnotes_under(node):
-            num = fn.children[0].astext().strip()
-            newnode = collected_footnote(*fn.children, number=num)
-            fnotes[num] = [newnode, False]
-        return fnotes
-
-    def depart_start_of_file(self, node):
-        self.footnotestack.pop()
-        self.curfilestack.pop()
-        self.hlsettingstack.pop()
-
-    def visit_highlightlang(self, node):
+    #depart_highlightlang = default_depart
+    def visit_highlightlang(self, node, ctx):
         self.hlsettingstack[-1] = [node['lang'], node['linenothreshold']]
         raise nodes.SkipNode
 
-
-    def visit_problematic(self, node):
-        self.body.append(r'{\color{red}\bfseries{}')
-
-    def depart_problematic(self, node):
-        self.body.append('}')
-
-    def visit_topic(self, node):
+    def visit_topic(self, node, ctx):
         self.in_minipage = 1
-        self.body.append('\n\\begin{SphinxShadowBox}\n')
+        ctx.body.push('\n\\begin{SphinxShadowBox}\n')
+        ctx.end_tags.push('\\end{SphinxShadowBox}\n')
 
-    def depart_topic(self, node):
+    def depart_topic(self, node, ctx):
+        self.default_depart(node, ctx)
         self.in_minipage = 0
-        self.body.append('\\end{SphinxShadowBox}\n')
-    visit_sidebar = visit_topic
+
+    visit_sidebar  = visit_topic
     depart_sidebar = depart_topic
+
+    # def visit_citation(self, node, ctx):
+    #     # TODO maybe use cite bibitems
+    #     # bibitem: [citelabel, citetext, docname, citeid]
+    #     self.bibitems.append(['', '', '', ''])
+
+    # def depart_citation(self, node, ctx):
+    #     size = self.context.pop()
+    #     text = ''.join(self.body[size:])
+    #     del self.body[size:]
+    #     self.bibitems[-1][1] = text
+
+    # depart_citation_reference = default_depart
+    # def visit_citation_reference(self, node):
+    #     # This is currently never encountered, since citation_reference nodes
+    #     # are already replaced by pending_xref nodes in the environment.
+    #     ctx.body.push('\\cite{%s}' % self.idescape(node.astext()))
+    #     # raise nodes.SkipNode

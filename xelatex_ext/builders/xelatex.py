@@ -20,8 +20,8 @@
 # imports
 # ==============================================================================
 
-from six import iteritems
 from os import path, listdir
+from six import iteritems
 
 from docutils import nodes
 from docutils.io import FileOutput
@@ -35,7 +35,7 @@ from sphinx.util.console import bold, darkgreen
 from sphinx.util.nodes import inline_all_toctrees
 from sphinx.util.osutil import copyfile
 
-from xelatex_ext.writers.doccfg import XeLateXDocSet
+from xelatex_ext.writers.doccfg import XeLaTeXDocSet
 from xelatex_ext.writers.xelatex import XeLaTeXWriter
 #from sphinx.writers.xelatex import XeLaTeXWriter
 
@@ -70,7 +70,7 @@ class XeLaTeXBuilder(Builder):
         :ivar XeLateXDocSet docset:  Extended (Xe)LaTeX *per-document* settings.
         """
         super(XeLaTeXBuilder, self).init()
-        self.docset = XeLateXDocSet(self.app)
+        self.docset = XeLaTeXDocSet(self.app)
 
     def build(self, docnames, summary=None, _method=None):
         u"""Build (Xe)LaTeX documents.
@@ -89,6 +89,12 @@ class XeLaTeXBuilder(Builder):
     def prepare_writing(self, docnames):
         """A place where you can add logic before :meth:`write_doc` is run"""
         pass
+
+    def write(self, build_docnames, updated_docnames, method='update'):
+        if not build_docnames:
+            self.info(bold('no XeLaTeX targets to build'))
+            return
+        super(XeLaTeXBuilder, self).write(build_docnames, updated_docnames, method)
 
     def write_doc(self, docname, doctree):
         """Where you actually write something to the filesystem."""
@@ -110,7 +116,7 @@ class XeLaTeXBuilder(Builder):
             encoding         = 'utf-8')
         tree.settings = docCfg
 
-        writer = self.writerClass()
+        writer = self.writerClass(self)
         writer.write(tree, outFile)
         self.info("done")
 

@@ -178,9 +178,10 @@ class Polyglossia(object):
         return retVal
 
     def foreignlanguage(self, langcode):
-        lang = self.langcode2name()
+        lang = self.langcode2name(langcode)
         if not lang:
             return None
         self.other_langs.add(lang)
         startTag = "\foreignlanguage{%s}{" % lang
         endTag   = "}"
+        return startTag, endTag

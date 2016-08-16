@@ -99,7 +99,7 @@ class DocSet(object):
     This class captures the aspects of the e.g ``xelatex_documents`` items from
     the sphinx configuration (``conf.py``).  The :py:class:`DocSet` is a
     abstraction, for a detailed implementation and usage see
-    :py:class:`XeLatexDocSet`.
+    :py:class:`XeLaTexDocSet`.
 
     :ivar list docs: A list of configured documents (:py:class:`DocData`
         instances)
@@ -124,7 +124,7 @@ class DocSet(object):
                    , paper_size = "letter" ) ]
 
     :cvar str cfg_name: Name of the configuration with the *docset*
-      (e.g. ``xelatex_documents``).
+        (e.g. ``xelatex_documents``).
 
     :cvar list req_names: A list of strings with additional required names in
         each *per-document* configuration.  Minimal required names in a
@@ -170,7 +170,7 @@ class DocSet(object):
         if self.cfg_name is None:
             raise RuntimeError("Config name (self.cfg_name) is unset.")
 
-        cfg = self.app.config.get(self.cfg_name, None)
+        cfg = getattr(self.app.config, self.cfg_name, None)
         if not cfg:
             self.app.warn("no or empty '%s' config value found;"
                           " no documents will be written"
@@ -190,11 +190,11 @@ class DocSet(object):
                 raise ConfigError("'%s' config value at position %s missed"
                                   " it's *docname*" % (self.cfg_name, pos))
 
-            if docname not in self.app.env.all_docs:
-                self.app.warn("'%s' config value at position %s will be"
-                              " ignored; reference to unknown *%s*"
-                              % (self.cfg_name, pos, docname))
-                continue
+            #if docname not in self.app.env.all_docs:
+            #    self.app.warn("'%s' config value at position %s will be"
+            #                  " ignored; reference to unknown *%s*"
+            #                  % (self.cfg_name, pos, docname))
+            #    continue
 
             if not targetname:
                 raise ConfigError("'%s' config value at position %s missed"
@@ -224,7 +224,7 @@ class DocSet(object):
 
 
 # ==============================================================================
-class XeLatexDocSet(DocSet):
+class XeLaTeXDocSet(DocSet):
 # ==============================================================================
 
     u"""Extended (Xe)LaTeX *per-document* settings.
@@ -307,7 +307,7 @@ class XeLatexDocSet(DocSet):
     #   for ?
 
     def __init__(self, *args, **kwargs):
-        super(XeLatexDocSet, self).__init__(*args, **kwargs)
+        super(XeLaTeXDocSet, self).__init__(*args, **kwargs)
         self.additional_files = self.app.config.latex_additional_files
         self.logo             = self.app.config.latex_logo
 
@@ -331,7 +331,7 @@ class XeLatexDocSet(DocSet):
             pendingnode.replace_self(newnodes)
 
     def loadDocData(self):
-        super(XeLatexDocSet, self).__init__(
+        super(XeLaTeXDocSet, self).loadDocData(
             paper_size            = self.app.config.latex_paper_size
             , font_size           = self.app.config.latex_font_size
             , use_parts           = self.app.config.latex_use_parts

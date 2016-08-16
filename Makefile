@@ -4,8 +4,8 @@ include utils/makefile.include
 include utils/makefile.python
 include utils/makefile.sphinx
 
-GIT_URL   = https://github.com/return42/linuxdoc.git
-PYOBJECTS = linuxdoc
+GIT_URL   = https://github.com/return42/sphinx-xelatex.git
+PYOBJECTS = xelatex_ext
 
 all: clean pylint pytest build docs
 

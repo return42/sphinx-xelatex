@@ -11,7 +11,7 @@ install_requires = [
     , 'six' ]
 
 setup(
-    name               = "linuxdoc"
+    name               = "xelatex_ext"
     , version          = pckg.__version__
     , description      = pckg.__description__
     , long_description = pckg.__doc__

@@ -19,17 +19,17 @@ or clone from github::
 
 As the project WIP , an update should be carried out regularly.::
 
-  pip install --upgrade git+http://github.com/return42/linuxdoc.git
+  pip install --upgrade git+http://github.com/return42/sphinx-xelatex.git
 
 If you are a developer and like to contribute to the project, fork on github or
 clone and make a developer install::
 
-  git clone https://github.com/return42/linuxdoc
-  cd linuxdoc
+  git clone https://github.com/return42/sphinx-xelatex
+  cd sphinx-xelatex
   make install
 
-Below you see how to integrate the linuxdoc sphinx extensions into your sphinx
-build process. In the ``conf.py`` (`sphinx config`_) add the ``xelatex_ext``
+Below you see how to integrate the sphinx extensions into your sphinx build
+process. In the ``conf.py`` (`sphinx config`_) add the ``xelatex_ext``
 extension:
 
 .. code-block:: python

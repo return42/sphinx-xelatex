@@ -34,10 +34,10 @@ from sphinx.errors import SphinxError
 from sphinx.util.console import bold, darkgreen
 from sphinx.util.nodes import inline_all_toctrees
 from sphinx.util.osutil import copyfile
+from sphinx.util.parallel import ParallelTasks, make_chunks
 
 from xelatex_ext.writers.doccfg import XeLaTeXDocSet
 from xelatex_ext.writers.xelatex import XeLaTeXWriter
-#from sphinx.writers.xelatex import XeLaTeXWriter
 
 XETEX_INPUTS_FOLDER = path.abspath(
     path.join(path.dirname(__file__), "xetex_inputs"))
@@ -72,58 +72,122 @@ class XeLaTeXBuilder(Builder):
         super(XeLaTeXBuilder, self).init()
         self.docset = XeLaTeXDocSet(self.app)
 
-    def build(self, docnames, summary=None, _method=None):
-        u"""Build (Xe)LaTeX documents.
-
-        Builds always all (Xe)LaTeX documents.  Partial (re-) build of (Xe)LaTeX
-        output is not yet intended.  (see :py:`meth`get_outdated_docs`)."""
-        super(XeLaTeXBuilder, self).build(docnames, summary=summary, method=None)
-
     def get_outdated_docs(self):
         u"""Allways returns *all documents*
 
         Partial (re-) build of (Xe)LaTeX output is not intended!  """
 
-        return list(self.docset.docnames)
+        return 'all documents'  # for now
 
-    def prepare_writing(self, docnames):
+    def build(self, docnames, summary=None, _method=None):
+        u"""Build (Xe)LaTeX documents.
+
+        Builds always all (Xe)LaTeX documents.  Partial (re-) build of (Xe)LaTeX
+        output is not yet intended.  (see :py:`meth`get_outdated_docs`)."""
+
+        super(XeLaTeXBuilder, self).build(docnames, summary=summary, method=None)
+
+    def prepare_writing(self, docCfgList):
         """A place where you can add logic before :meth:`write_doc` is run"""
         pass
 
-    def write(self, build_docnames, updated_docnames, method='update'):
-        if not build_docnames:
+    def write(self, *_ignored):
+        if not self.docset.docs:
             self.info(bold('no XeLaTeX targets to build'))
             return
-        super(XeLaTeXBuilder, self).write(build_docnames, updated_docnames, method)
 
-    def write_doc(self, docname, doctree):
-        """Where you actually write something to the filesystem."""
+        self.info(bold('preparing targets... '), nonl=True)
+        self.prepare_writing(self.docset.docs)
+        self.info('done')
 
-        # the argument doctree from base implementation can't used any more,
-        # because the tree of a LateX document might be different in case of
-        # options like toctree_only. These LaTeX aspetcs are covered by the
-        # self.assemble_doctree method.
+        warnings = []
+        self.env.set_warnfunc(
+            lambda *args, **kwargs: warnings.append((args, kwargs)))
+        if self.parallel_ok:
+            # number of subprocesses is parallel-1 because the main process
+            # is busy loading doctrees and doing write_doc_serialized()
+            self._write_parallel(
+                self.docset.docs, warnings, nproc=self.app.parallel - 1)
+        else:
+            self._write_serial(self.docset.docs, warnings)
+        self.env.set_warnfunc(self.warn)
 
-        docCfg = self.docset.getDocCfg(docname)
+    def _write_serial(self, docCfgList, warnings):
+        for docCfg in self.app.status_iterator(
+                docCfgList, 'writing output... ', darkgreen, len(docCfgList)):
+            self.write_doc_serialized(docCfg)
+            self.write_doc(docCfg)
+        for warning, kwargs in warnings:
+            self.warn(*warning, **kwargs)
 
+    def _write_parallel(self, docCfgList, warnings, nproc):
+        def write_process(docs):
+            local_warnings = []
+            def warnfunc(*args, **kwargs):
+                local_warnings.append((args, kwargs))
+            self.env.set_warnfunc(warnfunc)
+            for targetname, doctree in docs:
+                self.write_doc(targetname, doctree)
+            return local_warnings
+
+        def add_warnings(_docs, wlist):
+            warnings.extend(wlist)
+
+        # warm up caches/compile templates using the first document
+        docCfg, docCfgList = docCfgList[0], docCfgList[1:]
+
+        self.write_doc_serialized(docCfg)
+        self.write_doc(docCfg)
+
+        tasks  = ParallelTasks(nproc)
+        chunks = make_chunks(docCfg, nproc)
+
+        for chunk in self.app.status_iterator(
+                chunks, 'writing output... ', darkgreen, len(chunks)):
+            arg = []
+            for docCfg in chunk:
+                self.write_doc_serialized(docCfg)
+                arg.append((docCfg,))
+            tasks.add_task(write_process, arg, add_warnings)
+
+        # make sure all threads have finished
+        self.info(bold('waiting for workers...'))
+        tasks.join()
+
+        for warning, kwargs in warnings:
+            self.warn(*warning, **kwargs)
+
+    def write_doc_serialized(self, docCfg):  # pylint: disable=W0221
+        """Handle parts of write_doc that must be called in the main process
+        if parallel build is active.
+        """
+        pass
+
+    def write_doc(self, docCfg):  # pylint: disable=W0221
+        """Where you actually write something to the filesystem.
+        """
         self.info("processing " + docCfg.targetname + "... ", nonl=1)
-        tree = self.assemble_doctree(docCfg)
-        self.post_process_images(tree)
 
+        # The argument doctree are covered by the self.assemble_doctree
+        # method. The docCfg is shipped in the writer.document.docCfg
+
+        doctree = self.assemble_doctree(docCfg)
+        doctree.docCfg = docCfg
+
+        self.post_process_images(doctree)
         self.info("writing... ", nonl=1)
         outFile = FileOutput(
-            destination_path = path.join(self.outdir, docCfg.targetname),
-            encoding         = 'utf-8')
-        tree.settings = docCfg
+            destination_path = path.join(self.outdir, docCfg.targetname)
+            , encoding       = 'utf-8')
 
         writer = self.writerClass(self)
-        writer.write(tree, outFile)
+        writer.write(doctree , outFile)
         self.info("done")
 
     def assemble_doctree(self, docCfg):
 
-        self.info(darkgreen(docCfg.startdocname))
-        tree = self.env.get_doctree(docCfg.startdocname)
+        self.info(darkgreen(docCfg.docname))
+        tree = self.env.get_doctree(docCfg.docname)
 
         if docCfg.toctree_only:
             # extract toctree nodes from the tree and put them in a
@@ -138,18 +202,18 @@ class XeLaTeXBuilder(Builder):
             tree = new_tree
 
         tree = inline_all_toctrees(
-            self, docCfg.docnames, docCfg.startdocname, tree,
-            darkgreen, [docCfg.startdocname])
+            self, self.docset.docnames, docCfg.docname, tree
+            , darkgreen, [docCfg.docname])
 
-        tree['docname'] = docCfg.startdocname
+        tree['docname'] = docCfg.docname
 
-        for docname in docCfg.appendices:
-            appendix = self.env.get_doctree(docname)
-            appendix['docname'] = docname
+        for appendix_docname in docCfg.appendices:
+            appendix = self.env.get_doctree(appendix_docname)
+            appendix['docname'] = appendix_docname
             tree.append(appendix)
 
         self.info("resolving references...")
-        self.env.resolve_references(tree, docCfg.startdocname, self)
+        self.env.resolve_references(tree, docCfg.docname, self)
         docCfg.replacePendingRefsInTree(tree)
         docCfg.initFromTree(tree)
         return tree

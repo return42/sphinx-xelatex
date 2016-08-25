@@ -23,12 +23,27 @@ from contextlib import contextmanager
 from six import text_type, itervalues
 
 from docutils import nodes, writers
+from docutils.utils import roman
 from docutils.writers.latex2e import CharMaps, SortableDict, PreambleCmds
 
 from sphinx import highlighting
 from sphinx import addnodes
+from sphinx.locale import admonitionlabels, _
 
 from xelatex_ext.writers.polyglossia import Polyglossia
+
+# ==============================================================================
+class Container(dict):
+# ==============================================================================
+
+    @property
+    def __dict__(self):
+        return self
+    def __getattr__(self, attr):
+        return self[attr]
+    def __setattr__(self, attr, val):
+        self[attr] = val
+
 
 # ==============================================================================
 class cmap(CharMaps):
@@ -95,6 +110,16 @@ class tex(object):
             optarg = "[%s]" % optarg
         return u"\\renewcommand{\\%s}%s%s{%s}\n" % (cmd, defn, nargs, optarg)
 
+    @staticmethod
+    def ids_to_labels(node, set_anchor=True):
+        """Return list of label definitions for all ids of `node`
+
+        If `set_anchor` is True, an anchor is set with \phantomsection.
+        """
+        labels = ['\\label{%s}' % id for id in node.get('ids', [])]
+        if set_anchor and labels:
+            labels.insert(0, '\\phantomsection')
+        return labels
 
 # ==============================================================================
 class SimpleFILO(list):
@@ -106,26 +131,6 @@ class SimpleFILO(list):
 
     def is_empty(self):
         return not bool(self)
-
-# ==============================================================================
-class SectCounter(list):
-# ==============================================================================
-
-    def __init__(self):
-        super(SectCounter, self).__init__()
-        self.incrLevel()
-
-    def incrLevel(self):
-        self.append(1)
-
-    def decrLevel(self):
-        self.pop()
-
-    def incrNum(self):
-        self[-1] += 1
-
-    def decrNum(self):
-        self[-1] -= 1
 
 # ==============================================================================
 class XeLaTeXWriter(writers.Writer):
@@ -199,7 +204,6 @@ class Translator(object):
     def __init__(self, document):
         self.document     = document
         self.ctx_stacks   = dict()
-        self.sectCounter  = SectCounter()
 
     def push_ctx(self, name, val):
         stack = self.ctx_stacks.get(name, None)
@@ -224,11 +228,10 @@ class Translator(object):
             % (method.__name__, node_name))
 
         # push context onto the node stack
-        ctx  = dict(
+        ctx  = Container(
             # predefined names in the ctx object
             end_tags      = SimpleFILO()
             , body        = SimpleFILO()
-            , sectCounter = self.sectCounter
         )
         self.push_ctx(node_name, ctx)
         return method(node, ctx)
@@ -249,7 +252,7 @@ class Translator(object):
         ctx  = self.pop_ctx(node_name)
         return method(node, ctx)
 
-    def unknown_visit(self, node):
+    def unknown_visit(self, node, ctx):
         """
         Called when entering unknown `Node` types.
 
@@ -261,7 +264,7 @@ class Translator(object):
                 '%s visiting unknown node type: %s'
                 % (self.__class__, node.__class__.__name__))
 
-    def unknown_departure(self, node):
+    def unknown_departure(self, node, ctx):
         """
         Called before exiting unknown `Node` types.
 
@@ -301,7 +304,10 @@ class XeLaTeX_TEMPLATES(object):
 
 %% Fallback definitions for Docutils-specific commands
 %(fallbacks)s
-$pdfsetup
+%(pdfsetup)s
+
+
+
 $titledata
 %%% Body
 \begin{document}
@@ -335,6 +341,59 @@ $body_pre_docinfo$docinfo$dedication$abstract$body
 \end{document}
 """
 
+
+# ==============================================================================
+class DocumentClass(object):
+# ==============================================================================
+
+    """Details of a LaTeX document class."""
+
+    # FIXME: Document class has to be maried with toplevel_sectioning
+
+    sec_names = ["part", "chapter", "section", "subsection"
+                 , "subsubsection", "paragraph", "subparagraph"]
+
+    def __init__(self, docCfg):
+        self.docCfg           = docCfg
+        self.sectCounter      = [1,]
+        self.top_sectionlevel = 1
+        # determine top section level
+        if docCfg.toplevel_sectioning:
+            self.top_sectionlevel = self.sec_names.index(docCfg.toplevel_sectioning)
+
+    @property
+    def documentoptions(self):
+        # FIXME, das mit documentoptions muss ich hier mal irgendwie nachbilden
+        xxxxxxxxxxxxxxxx self.documentoptions
+        d_options = 
+        return ','.join(filter(None, d_options))
+
+    @property
+    def sectionlevel(self):
+        return len(self.sectCounter)
+
+    @property
+    def sectionnumber(self):
+        return self.sectCounter[-1]
+
+    @property
+    def sectionname(self):
+        """Return the LaTeX section name for current section `level`."""
+        level = self.top_sectionlevel + self.sectionlevel
+        if level <= len(self.sec_names):
+            return self.sec_names[level-1]
+        else:  # unsupported levels
+            return 'DUtitle[section%s]' % roman.toRoman(level)
+
+    def enter_section(self):
+        # increment parent's (current) section counter and add a new level
+        self.sectCounter[-1] += 1
+        self.sectCounter.append(1)
+
+    def leave_section(self):
+        # decrement section level (parents counter continues)
+        self.sectCounter.pop()
+
 # ==============================================================================
 class XeLaTeXTranslator(Translator):
 # ==============================================================================
@@ -345,8 +404,20 @@ class XeLaTeXTranslator(Translator):
     ``sphinx.writers.latex.LaTeXTranslator`.
     """
 
-    TEMPLATES    = XeLaTeX_TEMPLATES
-    sectionnames = ["part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"]
+
+    TEMPLATES = XeLaTeX_TEMPLATES
+    optional = ("comment", 'compound', 'decoration')
+
+    head_parts   = (
+        'requirements'
+        #, 'head_prefix'
+        #, 'latex_preamble'
+        #, 'stylesheets'
+        , 'fallbacks'
+        , 'pdfsetup'
+        #, 'title'
+        , 'subtitle'
+        , 'titledata' )
 
     default_ctx = {
         'papersize':         'letterpaper'
@@ -369,6 +440,7 @@ class XeLaTeXTranslator(Translator):
 
     def __init__(self, document, builder):
         Translator.__init__(self, document)
+        docCfg = self.document.docCfg
 
         self.builder  = builder
         self.settings = document.settings
@@ -377,7 +449,7 @@ class XeLaTeXTranslator(Translator):
         # --------
 
         self.elements  = self.default_ctx.copy()
-        self.elements.update(self.document.docCfg)
+        self.elements.update(docCfg)
 
         # common flags & stacks
         # ---------------------
@@ -400,30 +472,17 @@ class XeLaTeXTranslator(Translator):
 
         self.curfilestack       = []
 
-        self.compact_list       = 0
         self.first_document     = 1
         self.first_param        = 0
-        self.in_caption         = 0
-        self.in_container_literal_block = 0
-        self.in_merged_cell     = 0
-        self.in_minipage        = 0
-        self.in_production_list = 0
-        self.in_term            = 0
-        self.in_title           = 0
-        self.literal_whitespace = 0
-        self.no_contractions    = 0
-        self.remember_multirow  = {}
-        self.remember_multirowcol = {}
         self.this_is_the_title  = 1
-        self.handled_abbrs      = set()
+        # self.next_hyperlink_ids = {}
 
-        self.next_hyperlink_ids = {}
-        self.next_section_ids   = set()
+        # PDF properties (hyperref package)
+        # ---------------------------------
 
-        # PDF properties: pdftitle, pdfauthor
-        # TODO: not yet used
-        self.pdfinfo            = []
-        self.pdfauthor          = []
+        self.pdfsetup   = []
+        self.pdfinfo    = []  # PDF properties: pdftitle, pdfauthor
+        self.pdfauthor  = []
 
         # footnotes
         # ---------
@@ -440,10 +499,11 @@ class XeLaTeXTranslator(Translator):
         self.next_figure_ids  = set()
         self.next_table_ids   = set()
 
-        self.top_sectionlevel = self.sectionnames.index(self.document.docCfg.toplevel_sectioning)
-        self.sectionlevel     = self.top_sectionlevel
-        if self.document.docCfg.get('tocdepth'):
-            self.elements['tocdepth'] = (r'\setcounter{tocdepth}{%d}' % self.document.docCfg.get('tocdepth'))
+        if docCfg.get('tocdepth'):
+            self.elements['tocdepth'] = (r'\setcounter{tocdepth}{%d}' % docCfg.get('tocdepth'))
+
+        # FIXME: Document class has to be maried with toplevel_sectioning
+        self.d_class = DocumentClass(docCfg)
 
         # code highlighter
         # ----------------
@@ -477,12 +537,12 @@ class XeLaTeXTranslator(Translator):
         self.body = self.bodystack.pop()
         return body
 
-    def push_hyperlink_ids(self, figtype, ids):
-        hyperlink_ids = self.next_hyperlink_ids.setdefault(figtype, set())
-        hyperlink_ids.update(ids)
+    # def push_hyperlink_ids(self, figtype, ids):
+    #     hyperlink_ids = self.next_hyperlink_ids.setdefault(figtype, set())
+    #     hyperlink_ids.update(ids)
 
-    def pop_hyperlink_ids(self, figtype):
-        return self.next_hyperlink_ids.pop(figtype, set())
+    # def pop_hyperlink_ids(self, figtype):
+    #     return self.next_hyperlink_ids.pop(figtype, set())
 
     def restrict_footnote(self, node):
         if self.footnote_restricted is False:
@@ -498,6 +558,8 @@ class XeLaTeXTranslator(Translator):
             self.pending_footnotes = []
 
     def astext(self):
+        from linuxdoc.kernel_doc import CONSOLE
+        CONSOLE()
         return (
             self.TEMPLATES.HEADER % self.elements
             + self.highlighter.get_stylesheet()
@@ -581,6 +643,11 @@ class XeLaTeXTranslator(Translator):
     # common visitors
     # ------------------------------------------------------------
 
+    def default_depart(self, node, ctx):
+        self.out.extend(ctx.body)
+        self.out.extend(ctx.end_tags)
+
+    depart_inline = default_depart
     def visit_inline(self, node, ctx): # <span>, i.e. custom roles
         for cls in node['classes']:
 
@@ -599,27 +666,18 @@ class XeLaTeXTranslator(Translator):
                 ctx.body.push(r'\DUrole{%s}{' % cls)
                 ctx.end_tags.push('}')
 
-    def depart_inline(self, node, ctx):
-        self.out.extend(ctx.body)
-        self.out.extend(ctx.end_tags)
-
+    depart_docinfo_item = default_depart
     def visit_docinfo_item(self, node, ctx, name):
         if name == 'author':
             self.pdfauthor.append(self.attval(node.astext()))
         ctx.body.append('\\textbf{%s}: &\n\t' % name)
         if name == 'address':
             ctx.body.append('{\\raggedright\n')
-            ctx.end_tag.push(' } \\\\\n')
+            ctx.end_tags.push(' } \\\\\n')
         else:
-            ctx.end_tag.push(' \\\\\n')
+            ctx.end_tags.push(' \\\\\n')
 
-    def depart_docinfo_item(self, node, ctx):
-        self.out.extend(ctx.body)
-        self.out.extend(ctx.end_tags)
 
-    def default_depart(self, node, ctx):
-        self.out.extend(ctx.body)
-        self.out.extend(ctx.end_tags)
 
     # ------------------------------------------------------------
     # visitors
@@ -656,9 +714,6 @@ class XeLaTeXTranslator(Translator):
         if 'docname' in node:
             ctx.body.push(self.hypertarget(':doc'))
 
-        # "- 1" because the level is increased before the title is visited
-        self.sectionlevel = self.top_sectionlevel - 1
-
     def depart_document(self, node, ctx):
         if self.bibitems:
             widest = tex.widest_label([bi[0] for bi in self.bibitems])
@@ -673,14 +728,97 @@ class XeLaTeXTranslator(Translator):
         self.default_depart(node, ctx)
 
     def visit_section(self, node, ctx):
-        # increment parent's (current) section counter and add a new level
-        ctx.sectCounter.incrNum()
-        ctx.sectCounter.incrLevel()
+        self.d_class.enter_section()
 
     def depart_section(self, node, ctx):
-        # decrement section level (parents counter continues)
-        ctx.sectCounter.decrLevel()
+        self.d_class.leave_section()
+
+    def visit_title(self, node, ctx):
+
+        if isinstance(node.parent, addnodes.seealso):
+            # the environment already handles this
+            raise nodes.SkipNode
+
+        parent = node.parent
+        self.in_title = 1
+
+        # Document title
+        if self.this_is_the_title:
+
+            if (len(node.children) != 1
+                and not isinstance(node.children[0], nodes.Text)):
+                self.builder.warn('document title is not a single Text node',
+                                  (self.curfilestack[-1], node.line))
+            if not self.elements['title']:
+                # text needs to be escaped since it is inserted into
+                # the output literally
+                self.elements['title'] = cmap.mask(node.astext())
+
+            self.pdfinfo.append('  pdftitle={%s},' % self.elements['title'] )
+            self.this_is_the_title = 0
+            raise nodes.SkipNode
+
+        # Topic titles (topic, admonition, sidebar)
+        elif (isinstance(parent, nodes.topic)
+              or isinstance(parent, nodes.Admonition)
+              or isinstance(parent, nodes.sidebar)):
+
+            self.fallbacks['title'] = PreambleCmds.title
+            classes = ','.join(parent['classes'])
+            if not classes:
+                classes = node.tagname
+            ctx.body.push(r'\\DUtitle[%s]{' % admonitionlabels['seealso'])
+            ctx.end_tags.push('}\n')
+
+        # Table caption
+        elif isinstance(parent, nodes.table):
+            ctx.body.push(self.active_table.caption)
+            ctx.end_tags.push('')
+
+        elif isinstance(parent, nodes.section):
+            if hasattr(PreambleCmds, 'secnumdepth'):
+                self.requirements['secnumdepth'] = PreambleCmds.secnumdepth
+            ctx.body.push('\n\n')
+
+            # System messages heading in red:
+            if ('system-messages' in parent['classes']):
+                self.requirements['color'] = PreambleCmds.color
+                sect_title = cmap.mask(node.astext())
+                ctx.body.push(r'\%s[%s]{\color{red}'
+                              % (sec_name, sec_title))
+            else:
+                ctx.body.push(r'\%s{' % self.d_class.sectionname)
+
+            self.builder.warn(
+                'encountered title node not in section, topic, table, '
+                'admonition or sidebar',
+                (self.curfilestack[-1], node.line or ''))
+
+    def depart_title(self, node, ctx):
         self.default_depart(node, ctx)
+        self.in_title = 1
+
+
+    depart_paragraph = default_depart
+    def visit_paragraph(self, node, ctx):
+        # insert blank line, if the paragraph is not first in a list item
+        # nor follows a non-paragraph node in a compound
+        index = node.parent.index(node)
+        if (index == 0 and (isinstance(node.parent, nodes.list_item) or
+                            isinstance(node.parent, nodes.description))):
+            pass
+        elif (index > 0 and isinstance(node.parent, nodes.compound) and
+              not isinstance(node.parent[index - 1], nodes.paragraph) and
+              not isinstance(node.parent[index - 1], nodes.compound)):
+            pass
+        else:
+            ctx.body.push(u'\n')
+        if node.get('ids'):
+            ctx.body.extend(tex.ids_to_labels(node))
+            ctx.push('\n')
+        if node['classes']:
+            self.visit_inline(node)
+        ctx.end_tags.push('\n')
 
     depart_Text = default_depart
     def visit_Text(self, node, ctx):
@@ -708,7 +846,7 @@ class XeLaTeXTranslator(Translator):
         # strip the generic 'admonition' from the list of classes
         node['classes'] = [c for c in node['classes'] if c != 'admonition']
         ctx.body.push('\n\\DUadmonition[%s]{\n' % ','.join(node['classes']))
-        ctx.end_tag.push('}\n')
+        ctx.end_tags.push('}\n')
 
     depart_author = default_depart
     def visit_author(self, node, ctx):
@@ -723,33 +861,33 @@ class XeLaTeXTranslator(Translator):
     depart_block_quote = default_depart
     def visit_block_quote(self, node, ctx):
         ctx.body.push('%\n\\begin{quote}\n')
-        ctx.end_tag.push('\n\\end{quote}\n')
+        ctx.end_tags.push('\n\\end{quote}\n')
         if node['classes']:
             self.visit_inline(node, ctx)
 
     depart_bullet_list = default_depart
     def visit_bullet_list(self, node, ctx):
         ctx.body.push('%\n\\begin{itemize}\n')
-        ctx.end_tag.push('\n\\end{itemize}\n')
+        ctx.end_tags.push('\n\\end{itemize}\n')
 
     depart_superscript = default_depart
     def visit_superscript(self, node, ctx):
         ctx.body.push(r'\textsuperscript{')
-        ctx.end_tag.push('}')
+        ctx.end_tags.push('}')
         if node['classes']:
             self.visit_inline(node, ctx)
 
     depart_subscript = default_depart
     def visit_subscript(self, node, ctx):
         ctx.body.push(r'\textsubscript{') # FIXME: requires `fixltx2e`?
-        ctx.end_tag.append('}')
+        ctx.end_tags.append('}')
         if node['classes']:
             self.visit_inline(node, ctx)
 
     depart_caption = default_depart
     def visit_caption(self, node, ctx):
         ctx.body.push('\n\\caption{')
-        ctx.end_tag.push('}\n')
+        ctx.end_tags.push('}\n')
 
     depart_title_reference = default_depart
     def visit_title_reference(self, node, ctx):
@@ -763,6 +901,30 @@ class XeLaTeXTranslator(Translator):
     def visit_problematic(self, node, ctx):
         ctx.body.push(r'{\color{red}\bfseries{}')
         ctx.end_tags.push( '}' )
+
+    depart_desc_parameterlist = default_depart
+    def visit_desc_parameterlist(self, node):
+        # close name, open parameterlist
+        ctx.body.push(r'}{')
+        ctx.end_tags.push(r'}{')
+        self.first_param = 1
+
+    depart_desc_parameter = default_depart
+    def visit_desc_parameter(self, node):
+        if not self.first_param:
+            ctx.body.push(r', ')
+        else:
+            self.first_param = 0
+        if not node.hasattr('noemph'):
+            ctx.body.push(r'\emph{')
+            ctx.end_tags.push(r'}')
+
+    depart_list_item = default_depart
+    def visit_list_item(self, node, ctx):
+        # Append "{}" in case the next character is "[", which would break
+        # LaTeX's list environment (no numbering and the "[" is not printed).
+        ctx.body.push(r'\item {} ')
+        ctx.end_tags.push('\n')
 
     #depart_highlightlang = default_depart
     def visit_highlightlang(self, node, ctx):
@@ -798,3 +960,10 @@ class XeLaTeXTranslator(Translator):
     #     # are already replaced by pending_xref nodes in the environment.
     #     ctx.body.push('\\cite{%s}' % self.idescape(node.astext()))
     #     # raise nodes.SkipNode
+
+
+    depart_seealso = default_depart
+    def visit_seealso(self, node, ctx):
+        ctx.body.push(u'\n\n\\textbf{%s}\n\n' % admonitionlabels['seealso'])
+        ctx.end_tags.push("\n\n")
+

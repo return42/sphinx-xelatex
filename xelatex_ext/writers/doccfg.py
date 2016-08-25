@@ -152,6 +152,11 @@ class DocSet(object):
         u"""List of all start-doc names in the configuration set."""
         return [cfg.docname for cfg in self.docs]
 
+    def getTargetCfg(self, targetname):
+        for docCfg in self.docs:
+            if docCfg.targetname == targetname:
+                return docCfg
+
     @property
     def targetnames(self):
         u"""List of all out-file names in the configuration set."""
@@ -260,7 +265,7 @@ class XeLaTeXDocSet(DocSet):
 
     * preamble: Additional stuff for the LaTeX preamble.
 
-    * appendices: Documents to append as an appendix to all manuals.
+    * appendices: Documents to append as an appendix.
 
     * show_pagerefs: If true, show page references after internal links.
 

@@ -148,7 +148,7 @@ class Polyglossia(object):
 
         self.builder      = builder
         self.lang_code    = lang_code
-        self.other_lcodes = other_lcodes
+        self.other_lcodes = other_lcodes or []
         self.other_langs  = set()
 
         self.language     = self.langcode2name(self.lang_code)

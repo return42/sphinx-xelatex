@@ -151,7 +151,7 @@ class Polyglossia(object):
         self.other_lcodes = other_lcodes or []
         self.other_langs  = set()
 
-        self.language     = self.langcode2name(self.lang_code)
+        self._language     = self.langcode2name(self.lang_code)
         for lc in self.other_lcodes:
             self.other_langs.add(self.langcode2name(lc))
 
@@ -163,6 +163,10 @@ class Polyglossia(object):
             content.append(r"\setotherlanguages{%s}"
                          % ",".join(sorted(self.other_langs)))
         return '\n'.join(content)
+
+    @property
+    def language(self):
+        return self._language
 
     def langcode2name(self, lang_code):
         """Return `polyglossia`_ (XeTeX) language name of `language_code`"""
